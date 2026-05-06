@@ -1,77 +1,42 @@
-# Importing stock ml libraries
 import warnings
 warnings.simplefilter('ignore')
+import argparse
+import json
+import os
+import random
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
 from sklearn import metrics
+from sklearn.preprocessing import MultiLabelBinarizer
 import transformers
 from transformers import BartTokenizer
 import torch
-from torch.utils.data import Dataset, DataLoader, RandomSampler, SequentialSampler
+from torch.utils.data import Dataset, DataLoader
 import logging
 logging.basicConfig(level=logging.ERROR)
-import json
-import os
 
-os.environ["CUDA_VISIBLE_DEVICES"]="2"
+DATASET_REGISTRY = {
+    # key          : (folder,       num_labels, default_epochs)
+    "reuters"      : ("reuters",     90,         15),
+    "rcv1-v2"      : ("rcv1-v2",     103,        15),
+    "econbiz"      : ("econbiz",     5661,       15),
+    "amazon"       : ("amazon",      531,        15),
+    "dbpedia"      : ("dbpedia",     298,        5),
+    "nyt"          : ("nyt",         166,        15),
+    "goemotions"   : ("goemotions",  28,         5),
+}
 
-# Source Data
-dataset = "DBPedia-298"   #[ 'R21578', 'RCV1-V2', 'Econbiz', 'Amazon-531', 'DBPedia-298','NYT AC','GoEmotions']
-labels = 298                #[90,103,5661,531,298,166,28]
-epochs = 5                #[15,15,15,15,5,15,5]
-train_list = json.load(open("../datasets/dbpedia/train_data.json")) # change the dataset folder name [ 'reuters', 'rcv1-v2', 'econbiz', 'amazon', 'dbpedia','nyt','goemotions']
-
-train_data = np.array(list(map(lambda x: (list(x.values())[:2]), train_list)),dtype=object)
-train_labels= np.array(list(map(lambda x: list(x.values())[2], train_list)),dtype=object)
-test_list = json.load(open("../datasets/dbpedia/test_data.json")) #change dataset folder name
-test_data = np.array(list(map(lambda x: list(x.values())[:2], test_list)),dtype=object)
-test_labels = np.array(list(map(lambda x: list(x.values())[2], test_list)),dtype=object)
+MODEL_NAME = "bart"
 
 
-# Preprocess Labels
-from sklearn.preprocessing import MultiLabelBinarizer
-label_encoder = MultiLabelBinarizer()
-label_encoder.fit([*train_labels,*test_labels])
-train_labels_enc = label_encoder.transform(train_labels)
-test_labels_enc = label_encoder.transform(test_labels)
-
-# Create DataFrames
-train_df = pd.DataFrame()
-train_df['text'] = train_data[:,1]
-train_df['labels'] = train_labels_enc.tolist()
-
-test_df = pd.DataFrame()
-test_df['text'] = test_data[:,1]
-test_df['labels'] = test_labels_enc.tolist()
-
-print("Number of train texts ",len(train_df['text']))
-print("Number of train labels ",len(train_df['labels']))
-print("Number of test texts ",len(test_df['text']))
-print("Number of test labels ",len(test_df['labels']))
-train_df.head()
-test_df
+def set_seed(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 
-#  Setting up the device for GPU usage
-from torch import cuda
-
-device = 'cuda' if cuda.is_available() else 'cpu'
-
-
-# Sections of config
-# Defining some key variables that will be used later on in the training
-MAX_LEN = 512
-TRAIN_BATCH_SIZE = 4
-VALID_BATCH_SIZE = 4
-EPOCHS = epochs
-LEARNING_RATE = 5e-05
-tokenizer = BartTokenizer.from_pretrained('facebook/bart-base')
-
-# Define CustomDataset
-# BART does not use token_type_ids
 class CustomDataset(Dataset):
-
     def __init__(self, dataframe, tokenizer, max_len):
         self.tokenizer = tokenizer
         self.data = dataframe
@@ -85,175 +50,215 @@ class CustomDataset(Dataset):
     def __getitem__(self, index):
         text = str(self.text[index])
         text = " ".join(text.split())
-
         inputs = self.tokenizer.encode_plus(
-            text,
-            None,
+            text, None,
             add_special_tokens=True,
             max_length=self.max_len,
             truncation=True,
             pad_to_max_length=True,
             return_token_type_ids=False
         )
-        ids = inputs['input_ids']
-        mask = inputs['attention_mask']
-
         return {
-            'ids': torch.tensor(ids, dtype=torch.long),
-            'mask': torch.tensor(mask, dtype=torch.long),
-            'targets': torch.tensor(self.targets[index], dtype=torch.float)
+            'ids':     torch.tensor(inputs['input_ids'],      dtype=torch.long),
+            'mask':    torch.tensor(inputs['attention_mask'], dtype=torch.long),
+            'targets': torch.tensor(self.targets[index],      dtype=torch.float),
         }
 
 
-# Creating the dataset and dataloader for the neural network
-# Train-Val-Test Split
-train_size = 0.8
-train_dataset = train_df.sample(frac=train_size,random_state=200)
-valid_dataset = train_df.drop(train_dataset.index).reset_index(drop=True)
-train_dataset = train_dataset.reset_index(drop=True)
-test_dataset  = test_df.reset_index(drop=True)
-
-print("TRAIN Dataset: {}".format(train_dataset.shape))
-print("VAL Dataset: {}".format(valid_dataset.shape))
-print("TEST Dataset: {}".format(test_dataset.shape))
-
-training_set = CustomDataset(train_dataset, tokenizer, MAX_LEN)
-validation_set = CustomDataset(valid_dataset, tokenizer, MAX_LEN)
-testing_set = CustomDataset(test_dataset, tokenizer, MAX_LEN)
-
-# Load Data
-train_params = {'batch_size': TRAIN_BATCH_SIZE,
-                'shuffle': True,
-                'num_workers': 0
-                }
-
-test_params = {'batch_size': VALID_BATCH_SIZE,
-               'shuffle': True,
-               'num_workers': 0
-               }
-training_loader = DataLoader(training_set, **train_params)
-validation_loader = DataLoader(validation_set, **test_params)
-testing_loader = DataLoader(testing_set, **test_params)
-
-# BART for multi-label sequence classification using BartForSequenceClassification
 class BartClass(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, num_labels):
         super(BartClass, self).__init__()
         self.bart = transformers.BartForSequenceClassification.from_pretrained(
-            'facebook/bart-base', num_labels=labels
+            'facebook/bart-base', num_labels=num_labels
         )
 
     def forward(self, ids, mask):
-        logits = self.bart(ids, attention_mask=mask).logits
-        return logits
+        return self.bart(ids, attention_mask=mask).logits
 
 
-model = BartClass()
-model.to(device)
-
-# Define Loss function
 def loss_fn(outputs, targets):
     return torch.nn.BCEWithLogitsLoss()(outputs, targets)
 
 
-optimizer = torch.optim.Adam(params=model.parameters(), lr=LEARNING_RATE)
-
-# Plot Val loss
-import matplotlib.pyplot as plt
-def loss_plot(epochs, loss):
-    plt.plot(epochs, loss, color='red', label='loss')
+def loss_plot(epochs_range, loss, plot_path):
+    import matplotlib.pyplot as plt
+    plt.figure()
+    plt.plot(epochs_range, loss, color='red', label='loss')
     plt.xlabel("epochs")
     plt.title("validation loss")
-    plt.savefig(dataset + "_val_loss.png")
+    plt.savefig(plot_path)
+    plt.close()
 
-# Train Model
-def train_model(start_epochs, n_epochs,
-                training_loader, validation_loader, model, optimizer):
+
+def train_model(n_epochs, training_loader, validation_loader, model, optimizer, device):
     loss_vals = []
-    for epoch in range(start_epochs, n_epochs + 1):
+    for epoch in range(1, n_epochs + 1):
         train_loss = 0
         valid_loss = 0
 
-        ######################
-        # Train the model #
-        ######################
-
         model.train()
-        print('############# Epoch {}: Training Start   #############'.format(epoch))
+        print(f'############# Epoch {epoch}: Training Start   #############')
         for batch_idx, data in enumerate(training_loader):
             optimizer.zero_grad()
-
-            # Forward
-            ids = data['ids'].to(device, dtype=torch.long)
+            ids     = data['ids'].to(device, dtype=torch.long)
             targets = data['targets'].to(device, dtype=torch.float)
-            mask = data['mask'].to(device, dtype=torch.long)
+            mask    = data['mask'].to(device, dtype=torch.long)
             outputs = model(ids, mask)
-            # Backward
-            loss = loss_fn(outputs, targets)
+            loss    = loss_fn(outputs, targets)
             loss.backward()
             optimizer.step()
-            train_loss = train_loss + ((1 / (batch_idx + 1)) * (loss.item() - train_loss))
-
-        ######################
-        # Validate the model #
-        ######################
+            train_loss += (1 / (batch_idx + 1)) * (loss.item() - train_loss)
 
         model.eval()
         with torch.no_grad():
             for batch_idx, data in enumerate(validation_loader, 0):
-                ids = data['ids'].to(device, dtype=torch.long)
+                ids     = data['ids'].to(device, dtype=torch.long)
                 targets = data['targets'].to(device, dtype=torch.float)
-                mask = data['mask'].to(device, dtype=torch.long)
+                mask    = data['mask'].to(device, dtype=torch.long)
                 outputs = model(ids, mask)
+                loss    = loss_fn(outputs, targets)
+                valid_loss += (1 / (batch_idx + 1)) * (loss.item() - valid_loss)
 
-                loss = loss_fn(outputs, targets)
-                valid_loss = valid_loss + ((1 / (batch_idx + 1)) * (loss.item() - valid_loss))
-
-            # calculate average losses
-            train_loss = train_loss / len(training_loader)
-            valid_loss = valid_loss / len(validation_loader)
-            # print training/validation statistics
-            print('Epoch: {} \tAverage Training Loss: {:.6f} \tAverage Validation Loss: {:.6f}'.format(
-                epoch,
-                train_loss,
-                valid_loss
-            ))
+            train_loss /= len(training_loader)
+            valid_loss /= len(validation_loader)
+            print(f'Epoch: {epoch} \tAvg Training Loss: {train_loss:.6f} \tAvg Validation Loss: {valid_loss:.6f}')
             loss_vals.append(valid_loss)
-        # Plot loss
-    loss_plot(np.linspace(1, n_epochs, n_epochs).astype(int), loss_vals)
-    return model
+
+    return model, loss_vals
 
 
-trained_model = train_model(1, epochs, training_loader, validation_loader, model, optimizer)
-
-
-def validation(testing_loader):
+def evaluate(model, testing_loader, device, threshold):
     model.eval()
-    fin_targets = []
-    fin_outputs = []
+    fin_targets, fin_outputs = [], []
     with torch.no_grad():
         for _, data in enumerate(testing_loader, 0):
-            ids = data['ids'].to(device, dtype=torch.long)
-            mask = data['mask'].to(device, dtype=torch.long)
+            ids     = data['ids'].to(device, dtype=torch.long)
+            mask    = data['mask'].to(device, dtype=torch.long)
             targets = data['targets'].to(device, dtype=torch.float)
             outputs = model(ids, mask)
             fin_targets.extend(targets.cpu().detach().numpy().tolist())
             fin_outputs.extend(torch.sigmoid(outputs).cpu().detach().numpy().tolist())
-    return fin_outputs, fin_targets
+    preds = np.array(fin_outputs) >= threshold
+    return preds, fin_targets
 
-# Test Model
-outputs, targets = validation(testing_loader)
-outputs = np.array(outputs) >= 0.5
-accuracy = metrics.accuracy_score(targets, outputs)
-f1_score_avg = metrics.f1_score(targets, outputs, average='samples')
-f1_score_micro = metrics.f1_score(targets, outputs, average='micro')
-f1_score_macro = metrics.f1_score(targets, outputs, average='macro')
-print(f"Accuracy Score = {accuracy}")
-print(f"F1 Score (Samples) = {f1_score_avg}")
-print(f"F1 Score (Micro) = {f1_score_micro}")
-print(f"F1 Score (Macro) = {f1_score_macro}")
 
-#Save results
-import sys
-with open(dataset + "_results.txt", "w") as f:
-    print(f"F1 Score (Samples) = {f1_score_avg}",f"Accuracy Score = {accuracy}",f"F1 Score (Micro) = {f1_score_micro}",f"F1 Score (Macro) = {f1_score_macro}", file=f)
+def main():
+    parser = argparse.ArgumentParser(description=f"{MODEL_NAME} multi-label text classification")
+    parser.add_argument("--dataset",    required=True, choices=list(DATASET_REGISTRY.keys()),
+                        help="Dataset name (determines num_labels and default epoch count)")
+    parser.add_argument("--seed",       type=int,   default=42)
+    parser.add_argument("--data-root",  default="../multi_label_data",
+                        help="Root directory containing per-dataset folders")
+    parser.add_argument("--lr",         type=float, default=5e-5)
+    parser.add_argument("--batch-size", type=int,   default=4)
+    parser.add_argument("--max-len",    type=int,   default=512)
+    parser.add_argument("--epochs",     type=int,   default=None,
+                        help="Override default epoch count from DATASET_REGISTRY")
+    parser.add_argument("--threshold",  type=float, default=0.5,
+                        help="Sigmoid threshold for converting probabilities to binary predictions")
+    parser.add_argument("--output-dir", default="results")
+    args = parser.parse_args()
+
+    folder, num_labels, default_epochs = DATASET_REGISTRY[args.dataset]
+    n_epochs = args.epochs if args.epochs is not None else default_epochs
+
+    set_seed(args.seed)
+
+    data_dir   = os.path.join(args.data_root, folder)
+    train_list = json.load(open(os.path.join(data_dir, "train_data.json")))
+    test_list  = json.load(open(os.path.join(data_dir, "test_data.json")))
+
+    train_data   = np.array(list(map(lambda x: list(x.values())[:2], train_list)), dtype=object)
+    train_labels = np.array(list(map(lambda x: list(x.values())[2],  train_list)), dtype=object)
+    test_data    = np.array(list(map(lambda x: list(x.values())[:2], test_list)),  dtype=object)
+    test_labels  = np.array(list(map(lambda x: list(x.values())[2],  test_list)),  dtype=object)
+
+    label_encoder    = MultiLabelBinarizer()
+    label_encoder.fit([*train_labels, *test_labels])
+    train_labels_enc = label_encoder.transform(train_labels)
+    test_labels_enc  = label_encoder.transform(test_labels)
+
+    train_df = pd.DataFrame({'text': train_data[:, 1], 'labels': train_labels_enc.tolist()})
+    test_df  = pd.DataFrame({'text': test_data[:, 1],  'labels': test_labels_enc.tolist()})
+
+    print(f"Train texts: {len(train_df)},  Test texts: {len(test_df)}")
+
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    tokenizer = BartTokenizer.from_pretrained('facebook/bart-base')
+
+    train_split = train_df.sample(frac=0.8, random_state=args.seed)
+    valid_split = train_df.drop(train_split.index).reset_index(drop=True)
+    train_split = train_split.reset_index(drop=True)
+    test_split  = test_df.reset_index(drop=True)
+
+    print(f"TRAIN: {train_split.shape}  VAL: {valid_split.shape}  TEST: {test_split.shape}")
+
+    train_params = {'batch_size': args.batch_size, 'shuffle': True,  'num_workers': 0}
+    eval_params  = {'batch_size': args.batch_size, 'shuffle': False, 'num_workers': 0}
+
+    training_loader   = DataLoader(CustomDataset(train_split, tokenizer, args.max_len), **train_params)
+    validation_loader = DataLoader(CustomDataset(valid_split, tokenizer, args.max_len), **eval_params)
+    testing_loader    = DataLoader(CustomDataset(test_split,  tokenizer, args.max_len), **eval_params)
+
+    model     = BartClass(num_labels).to(device)
+    optimizer = torch.optim.Adam(params=model.parameters(), lr=args.lr)
+
+    model, loss_vals = train_model(n_epochs, training_loader, validation_loader, model, optimizer, device)
+
+    preds, targets = evaluate(model, testing_loader, device, args.threshold)
+    accuracy   = metrics.accuracy_score(targets, preds)
+    f1_samples = metrics.f1_score(targets, preds, average='samples')
+    f1_micro   = metrics.f1_score(targets, preds, average='micro')
+    f1_macro   = metrics.f1_score(targets, preds, average='macro')
+
+    print(f"Accuracy Score = {accuracy}")
+    print(f"F1 Score (Samples) = {f1_samples}")
+    print(f"F1 Score (Micro) = {f1_micro}")
+    print(f"F1 Score (Macro) = {f1_macro}")
+
+    os.makedirs(args.output_dir, exist_ok=True)
+    stem      = f"{MODEL_NAME}_{args.dataset}_seed{args.seed}"
+    plot_path = os.path.join(args.output_dir, f"{stem}_loss.png")
+    txt_path  = os.path.join(args.output_dir, f"{stem}.txt")
+    json_path = os.path.join(args.output_dir, f"{stem}.json")
+
+    loss_plot(np.linspace(1, n_epochs, n_epochs).astype(int), loss_vals, plot_path)
+
+    with open(txt_path, "w") as f:
+        print(
+            f"F1 Score (Samples) = {f1_samples}",
+            f"Accuracy Score = {accuracy}",
+            f"F1 Score (Micro) = {f1_micro}",
+            f"F1 Score (Macro) = {f1_macro}",
+            file=f
+        )
+
+    payload = {
+        "model": MODEL_NAME,
+        "dataset": args.dataset,
+        "seed": args.seed,
+        "num_labels": num_labels,
+        "hyperparameters": {
+            "lr": args.lr,
+            "batch_size": args.batch_size,
+            "max_len": args.max_len,
+            "epochs": n_epochs,
+            "threshold": args.threshold,
+        },
+        "metrics": {
+            "accuracy": accuracy,
+            "f1_samples": f1_samples,
+            "f1_micro": f1_micro,
+            "f1_macro": f1_macro,
+        },
+        "val_loss_per_epoch": loss_vals,
+    }
+    with open(json_path, "w") as f:
+        json.dump(payload, f, indent=2)
+
+    print(f"Results saved to {txt_path}, {json_path}, {plot_path}")
+
+
+if __name__ == "__main__":
+    main()

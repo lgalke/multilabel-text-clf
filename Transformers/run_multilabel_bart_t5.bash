@@ -15,7 +15,8 @@
 
 set -euo pipefail
 
-DATA_ROOT="${DATA_ROOT:-../multi_label_data}"
+#DATA_ROOT="${DATA_ROOT:-../multi_label_data}"
+DATA_ROOT="/media/nvme4n1/project-textmlp/datasets"
 OUTPUT_DIR="${OUTPUT_DIR:-results}"
 GPU="${CUDA_VISIBLE_DEVICES:-0}"
 read -ra SEEDS <<< "${SEEDS:-42}"

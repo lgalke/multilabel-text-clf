@@ -55,7 +55,7 @@ class CustomDataset(Dataset):
             add_special_tokens=True,
             max_length=self.max_len,
             truncation=True,
-            pad_to_max_length=True,
+            padding='max_length',
             return_token_type_ids=False
         )
         return {

@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 CACHE_DIR = 'tmp/cache'
 MEMORY = Memory(CACHE_DIR, verbose=2)
-VALID_DATASETS = ['reuters', 'dbpedia', 'goemotions', 'econbiz', 'pubmed', 'amazon', 'rcv1-v2', 'nyt']
+VALID_DATASETS = ['reuters', 'dbpedia', 'goemotions', 'econbiz', 'pubmed', 'amazon', 'rcv1-v2', 'nyt', 'wos']
 
 
 @MEMORY.cache
@@ -137,3 +137,88 @@ def load_data(key, tokenizer, dataset_folder, max_length=None, construct_textgra
 
     # return docs, label_ids, train_mask, test_mask, label2index
     return docs, label_ids, train_mask, test_mask, mlb.classes_
+
+
+@MEMORY.cache(ignore=['n_jobs'])
+def load_wos_data(key, tokenizer, dataset_folder, max_length=None, n_jobs=1):
+    """Load the Web of Science dataset from pre-split .src/.tgt line files.
+
+    Each <split>.src file has one raw document per line; the corresponding
+    <split>.tgt file has space-separated label tokens per line, e.g. ``[a_18] [a_96]``.
+    Splits (train / val / test) are concatenated in that order so boolean masks can
+    address the combined array, mirroring the layout used by load_data().
+
+    Returns
+    -------
+    docs : list of encoded token-id lists (one per document)
+    label_ids : scipy sparse CSR matrix, shape (N, n_classes)
+    train_mask, val_mask, test_mask : torch.BoolTensor masks over N
+    classes : array of class names (from MultiLabelBinarizer)
+    """
+    assert key == 'wos', f"load_wos_data expects key='wos', got '{key}'"
+
+    raw_documents = []
+    all_labels = []
+    split_sizes = {}
+
+    for split in ('train', 'val', 'test'):
+        src_path = osp.join(dataset_folder, key, split + '.src')
+        tgt_path = osp.join(dataset_folder, key, split + '.tgt')
+
+        with open(src_path, mode='r', encoding='utf-8') as f:
+            docs = [line.rstrip('\n') for line in f]
+        with open(tgt_path, mode='r', encoding='utf-8') as f:
+            labels = [line.split() for line in f]
+
+        assert len(docs) == len(labels), (
+            f"Mismatch in {split}: {len(docs)} docs vs {len(labels)} label rows"
+        )
+        split_sizes[split] = len(docs)
+        raw_documents.extend(docs)
+        all_labels.extend(labels)
+
+    N_train = split_sizes['train']
+    N_val = split_sizes['val']
+    N_test = split_sizes['test']
+    N = N_train + N_val + N_test
+
+    print(f"Number of Train docs: {N_train}")
+    print(f"Number of Val   docs: {N_val}")
+    print(f"Number of Test  docs: {N_test}")
+
+    # Encode documents
+    if max_length:
+        print(f"Encoding documents with max_length={max_length}...")
+        enc_docs = [tokenizer.encode(doc, max_length=max_length) for doc in raw_documents]
+    else:
+        print("Encoding documents without max_length")
+        enc_docs = [tokenizer.encode(doc) for doc in raw_documents]
+
+    # Encode labels — fit on union of all splits to guarantee a complete label space
+    print("Encoding labels...")
+    from sklearn.preprocessing import MultiLabelBinarizer
+    mlb = MultiLabelBinarizer(sparse_output=True).fit(all_labels)
+    print(f"Found {len(mlb.classes_)} classes.")
+    label_ids = mlb.transform(all_labels)
+    print("Label ids shape:", label_ids.shape)
+
+    # Build boolean masks (order: train, val, test)
+    train_mask = torch.cat([
+        torch.ones(N_train, dtype=torch.bool),
+        torch.zeros(N_val + N_test, dtype=torch.bool),
+    ], dim=0)
+    val_mask = torch.cat([
+        torch.zeros(N_train, dtype=torch.bool),
+        torch.ones(N_val, dtype=torch.bool),
+        torch.zeros(N_test, dtype=torch.bool),
+    ], dim=0)
+    test_mask = torch.cat([
+        torch.zeros(N_train + N_val, dtype=torch.bool),
+        torch.ones(N_test, dtype=torch.bool),
+    ], dim=0)
+
+    print("Train check:", train_mask.sum().item())
+    print("Val   check:", val_mask.sum().item())
+    print("Test  check:", test_mask.sum().item())
+
+    return enc_docs, label_ids, train_mask, val_mask, test_mask, mlb.classes_

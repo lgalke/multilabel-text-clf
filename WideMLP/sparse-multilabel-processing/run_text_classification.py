@@ -28,7 +28,7 @@ from sklearn.feature_extraction.text import TfidfTransformer
 from sklearn.model_selection import train_test_split
 
 from tokenization import build_tokenizer_for_word_embeddings
-from data import load_data, load_word_vectors
+from data import load_data, load_word_vectors, load_wos_data
 from models import MLP, collate_for_mlp
 
 from multilabel_data import multilabel_collate_for_mlp, MultilabelDataset
@@ -50,7 +50,7 @@ USE_CUDA = torch.cuda.is_available()
 CACHE_DIR = 'cache/textclf'
 MEMORY = Memory(CACHE_DIR, verbose=2)
 
-VALID_DATASETS = ['reuters', 'dbpedia', 'goemotions', 'econbiz', 'pubmed', 'amazon', 'rcv1-v2', 'nyt']
+VALID_DATASETS = ['reuters', 'dbpedia', 'goemotions', 'econbiz', 'pubmed', 'amazon', 'rcv1-v2', 'nyt', 'wos']
 
 
 def inverse_document_frequency(encoded_docs, vocab_size):
@@ -256,32 +256,43 @@ def run_xy_model(args):
     else:
         max_length = 512  # should hold for all used transformer models?
 
-    enc_docs, enc_labels, train_mask, test_mask, label2index = load_data(args.dataset,
-                                                                         tokenizer,
-                                                                         args.dataset_folder,
-                                                                         max_length=max_length,
-                                                                         construct_textgraph=False,
-                                                                         n_jobs=args.num_workers)
-    print("Done")
+    if args.dataset == 'wos':
+        # WoS ships explicit train / val / test splits as line-aligned .src/.tgt files
+        enc_docs, enc_labels, train_mask, val_mask, test_mask, label2index = load_wos_data(
+            args.dataset,
+            tokenizer,
+            args.dataset_folder,
+            max_length=max_length,
+            n_jobs=args.num_workers,
+        )
+        print("Done")
+
+        enc_docs_arr = np.array(enc_docs, dtype=object)
+        enc_labels_arr = enc_labels  # already a sparse CSR matrix
+
+        train_data = MultilabelDataset(enc_docs_arr[train_mask], enc_labels_arr[train_mask])
+        valid_data = MultilabelDataset(enc_docs_arr[val_mask], enc_labels_arr[val_mask])
+        test_data = MultilabelDataset(enc_docs_arr[test_mask], enc_labels_arr[test_mask])
+    else:
+        enc_docs, enc_labels, train_mask, test_mask, label2index = load_data(args.dataset,
+                                                                             tokenizer,
+                                                                             args.dataset_folder,
+                                                                             max_length=max_length,
+                                                                             construct_textgraph=False,
+                                                                             n_jobs=args.num_workers)
+        print("Done")
+
+        enc_docs_arr = np.array(enc_docs, dtype=object)
+        enc_labels_arr = enc_labels  # already a sparse CSR matrix
+
+        train_data = MultilabelDataset(enc_docs_arr[train_mask], enc_labels_arr[train_mask])
+        test_data = MultilabelDataset(enc_docs_arr[test_mask], enc_labels_arr[test_mask])
+
+        train_data, valid_data = train_test_split(train_data, test_size=0.2, random_state=200)
 
     lens = np.array([len(doc) for doc in enc_docs])
     print("Min/max document length:", (lens.min(), lens.max()))
     print("Mean document length: {:.4f} ({:.4f})".format(lens.mean(), lens.std()))
-    # enc_docs_arr, enc_labels_arr = np.array(enc_docs, dtype='object'), np.array(enc_labels)
-    enc_docs_arr = np.array(enc_docs, dtype=object)
-    enc_labels_arr = enc_labels  # is already csr matrix
-
-    # train_data = list(zip(enc_docs_arr[train_mask], enc_labels_arr[train_mask, :]))
-    # test_data = list(zip(enc_docs_arr[test_mask], enc_labels_arr[test_mask, :]))
-
-    train_data = MultilabelDataset(enc_docs_arr[train_mask],
-                                   enc_labels_arr[train_mask])
-    test_data = MultilabelDataset(enc_docs_arr[test_mask],
-                                  enc_labels_arr[test_mask])
-
-
-
-    train_data, valid_data = train_test_split(train_data, test_size=0.2, random_state=200)
 
     print("N", len(enc_docs))
     print("N train", len(train_data))

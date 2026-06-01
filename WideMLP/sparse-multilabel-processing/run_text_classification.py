@@ -21,7 +21,8 @@ import matplotlib.pyplot as plt
 from joblib import Memory
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm, trange
-from transformers import (AdamW, AutoTokenizer, get_linear_schedule_with_warmup)
+from torch.optim import AdamW
+from transformers import (AutoTokenizer, get_linear_schedule_with_warmup)
 
 from sklearn.metrics import f1_score, accuracy_score
 from sklearn.feature_extraction.text import TfidfTransformer

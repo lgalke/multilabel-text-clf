@@ -177,7 +177,7 @@ def train(args, train_data, valid_data, model, tokenizer):
     return global_step, tr_loss / global_step
 
 
-def evaluate(args, dev_or_test_data, model, tokenizer):
+def evaluate(args, dev_or_test_data, model, tokenizer, threshold=None):
     N = len(dev_or_test_data)
     collate_fn = multilabel_collate_for_mlp
     data_loader = torch.utils.data.DataLoader(dev_or_test_data,
@@ -207,10 +207,11 @@ def evaluate(args, dev_or_test_data, model, tokenizer):
             eval_loss += loss.mean().item()
 
             # Thresholding
+            t = threshold if threshold is not None else args.threshold
             logits = torch.sigmoid(logits.detach())
             logits = logits.cpu().numpy()
-            logits[logits >= args.threshold] = 1
-            logits[logits < args.threshold] = 0
+            logits[logits >= t] = 1
+            logits[logits < t] = 0
             preds = logits
 
         N_batch = batch[2].size(0)  # Real batch size
@@ -335,9 +336,12 @@ def run_xy_model(args):
         wandb.watch(model, log_freq=args.logging_steps)
 
     train(args, train_data, valid_data, model, tokenizer)
-    acc, eval_loss, f1_micro, f1_samples, f1_macro = evaluate(args, test_data, model, tokenizer)
-    print(f"[{args.dataset}] Test accuracy: {acc:.4f}, Eval loss: {eval_loss}")
-    return acc, eval_loss, f1_micro, f1_samples, f1_macro
+    results = []
+    for t in args.threshold:
+        acc, eval_loss, f1_micro, f1_samples, f1_macro = evaluate(args, test_data, model, tokenizer, threshold=t)
+        print(f"[{args.dataset}] threshold={t} | Test accuracy: {acc:.4f}, Eval loss: {eval_loss:.4f}, F1 samples: {f1_samples:.4f}")
+        results.append((t, acc, eval_loss, f1_micro, f1_samples, f1_macro))
+    return results
 
 
 def loss_plot(epochs, loss):
@@ -366,8 +370,8 @@ def main():
                         help="Number of training epochs")
     parser.add_argument("--batch_size", type=int, default=16,
                         help="Batch size for training")
-    parser.add_argument("--threshold", type=float, default=0.5,
-                        help="Label threshold. Default: 0.5")
+    parser.add_argument("--threshold", type=float, nargs='+', default=[0.5],
+                        help="Label threshold(s) to evaluate. Multiple values run one evaluation each after a single training run. Default: 0.5")
     parser.add_argument("--test_batch_size", type=int, default=None,
                         help="Batch size for testing (defaults to train batch size)")
     parser.add_argument('--logging_steps', type=int, default=50,
@@ -422,20 +426,21 @@ def main():
         wandb.init(project="text-clf")
         wandb.config.update(args)
 
-    acc, eval_loss, f1_micro, f1_samples, f1_macro = {
+    results = {
         'mlp': run_xy_model
     }[args.model_type](args)
     if args.results_file:
         file_exists = os.path.isfile(args.results_file)
         with open(args.results_file, 'a', newline='') as csvfile:
-            headers = ['Model', 'Dataset', 'Epochs', 'Batch', 'Learning rate', 'eval loss', 'acc', 'f1 samples',
-                       'f1 micro', 'f1 macro']
+            headers = ['Model', 'Dataset', 'Epochs', 'Batch', 'Learning rate', 'Threshold',
+                       'eval loss', 'acc', 'f1 samples', 'f1 micro', 'f1 macro']
             csv_writer = csv.writer(csvfile)
             if not file_exists:
                 csv_writer.writerow(headers)
-            csv_writer.writerow(
-                [args.model_type, args.dataset, args.epochs, args.batch_size, args.learning_rate, eval_loss, acc,
-                 f1_samples, f1_micro, f1_macro])
+            for t, acc, eval_loss, f1_micro, f1_samples, f1_macro in results:
+                csv_writer.writerow(
+                    [args.model_type, args.dataset, args.epochs, args.batch_size, args.learning_rate, t,
+                     eval_loss, acc, f1_samples, f1_micro, f1_macro])
 
 
 if __name__ == '__main__':

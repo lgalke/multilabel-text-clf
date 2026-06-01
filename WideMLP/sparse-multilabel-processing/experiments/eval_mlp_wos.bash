@@ -7,7 +7,6 @@ MODEL_TYPE="mlp"
 TOKENIZER_NAME="bert-base-uncased"
 DATASET_FOLDER="../WoS-yy"
 DATASET="wos"
-THRESHOLD=0.2
 BATCH_SIZE=128
 EPOCHS=100
 RESULTS_FILE="results_mlp_wos.csv"
@@ -19,7 +18,7 @@ for seed in 1 2 3 4 5; do
         --dataset_folder "$DATASET_FOLDER" \
         --model_type "$MODEL_TYPE" \
         --tokenizer_name "$TOKENIZER_NAME" \
-        --threshold "$THRESHOLD" \
+        --threshold 0.2 0.5 \
         --batch_size "$BATCH_SIZE" \
         --epochs "$EPOCHS" \
         --num_workers 4 \

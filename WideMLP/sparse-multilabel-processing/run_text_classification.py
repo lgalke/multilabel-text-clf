@@ -215,6 +215,9 @@ def evaluate(args, dev_or_test_data, model, tokenizer, threshold=None):
             logits[logits < t] = 0
             preds = logits
 
+            all_targets.append(targets)
+            all_logits.append(preds)
+
         N_batch = batch[2].size(0)  # Real batch size
         batch_weight = N_batch / N  # Compute average incrementally
         # f1 micro and macro will *not* work like this
@@ -222,9 +225,10 @@ def evaluate(args, dev_or_test_data, model, tokenizer, threshold=None):
                                               average='samples')
         acc += batch_weight * accuracy_score(targets, preds)
 
-    # f1_micro = f1_score(targets, preds, average='micro')
-    # f1_macro = f1_score(targets, preds, average='macro')
-    f1_micro, f1_macro = np.NaN, np.NaN  # compatibility
+    all_targets = np.vstack(all_targets)
+    all_preds = np.vstack(all_logits)
+    f1_micro = f1_score(all_targets, all_preds, average='micro', zero_division=0)
+    f1_macro = f1_score(all_targets, all_preds, average='macro', zero_division=0)
 
     eval_loss /= nb_eval_steps
     if WANDB:

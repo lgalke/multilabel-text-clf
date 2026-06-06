@@ -437,14 +437,15 @@ def main():
     if args.results_file:
         file_exists = os.path.isfile(args.results_file)
         with open(args.results_file, 'a', newline='') as csvfile:
-            headers = ['Model', 'Dataset', 'Epochs', 'Batch', 'Learning rate', 'Threshold',
-                       'eval loss', 'acc', 'f1 samples', 'f1 micro', 'f1 macro']
+            headers = ['Model', 'Aggregation', 'Dataset', 'Epochs', 'Batch', 'Learning rate',
+                       'Threshold', 'eval loss', 'acc', 'f1 samples', 'f1 micro', 'f1 macro']
             csv_writer = csv.writer(csvfile)
             if not file_exists:
                 csv_writer.writerow(headers)
             for t, acc, eval_loss, f1_micro, f1_samples, f1_macro in results:
                 csv_writer.writerow(
-                    [args.model_type, args.dataset, args.epochs, args.batch_size, args.learning_rate, t,
+                    [args.model_type, args.bow_aggregation, args.dataset, args.epochs,
+                     args.batch_size, args.learning_rate, t,
                      eval_loss, acc, f1_samples, f1_micro, f1_macro])
 
 

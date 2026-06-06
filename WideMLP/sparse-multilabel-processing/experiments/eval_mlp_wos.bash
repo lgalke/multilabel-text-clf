@@ -13,15 +13,18 @@ RESULTS_FILE="results_mlp_wos.csv"
 
 set -e
 
-for seed in 1 2 3 4 5; do
-    python3 run_text_classification.py \
-        --dataset_folder "$DATASET_FOLDER" \
-        --model_type "$MODEL_TYPE" \
-        --tokenizer_name "$TOKENIZER_NAME" \
-        --threshold 0.2 0.5 \
-        --batch_size "$BATCH_SIZE" \
-        --epochs "$EPOCHS" \
-        --num_workers 4 \
-        --results_file "$RESULTS_FILE" \
-        "$DATASET"
+for agg in mean tfidf; do
+    for seed in 1 2 3 4 5; do
+        python3 run_text_classification.py \
+            --dataset_folder "$DATASET_FOLDER" \
+            --model_type "$MODEL_TYPE" \
+            --tokenizer_name "$TOKENIZER_NAME" \
+            --bow_aggregation "$agg" \
+            --threshold 0.2 0.5 \
+            --batch_size "$BATCH_SIZE" \
+            --epochs "$EPOCHS" \
+            --num_workers 4 \
+            --results_file "$RESULTS_FILE" \
+            "$DATASET"
+    done
 done

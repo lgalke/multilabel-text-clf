@@ -14,16 +14,19 @@
 #   SEEDS="42 43 44" CUDA_VISIBLE_DEVICES=1 bash run_multilabel_encoders.bash
 
 set -euo pipefail
+SEEDS="100 101 102"
+OUTPUT_DIR="results-encoders-v2"
 
 #DATA_ROOT="${DATA_ROOT:-../multi_label_data}"
 DATA_ROOT="/media/nvme4n1/project-textmlp/datasets"
 OUTPUT_DIR="${OUTPUT_DIR:-results-encoders}"
 GPU="${CUDA_VISIBLE_DEVICES:-0}"
-#read -ra SEEDS <<< "${SEEDS:-143 144}"
-SEEDS="100 101 102"
+read -ra SEEDS <<< "${SEEDS:-42}"
+THRESHOLDS=(0.5 0.2)
 
 # econbiz excluded for now
-DATASETS=(reuters amazon dbpedia goemotions)
+#DATASETS=(reuters amazon dbpedia goemotions)
+DATASETS=(reuters rcv1-v2 amazon dbpedia nyt goemotions)
 
 # model name (used for stem/json naming) -> script filename
 declare -A SCRIPT_FOR
@@ -45,6 +48,7 @@ echo "  GPU        : $GPU"
 echo "  SEEDS      : ${SEEDS[*]}"
 echo "  DATASETS   : ${DATASETS[*]}"
 echo "  MODELS     : ${MODELS[*]}"
+echo "  THRESHOLDS : ${THRESHOLDS[*]}"
 echo "===================="
 
 for dataset in "${DATASETS[@]}"; do
@@ -58,9 +62,12 @@ for dataset in "${DATASETS[@]}"; do
         script="${SCRIPT_FOR[$model]}"
         for seed in "${SEEDS[@]}"; do
             stem="${model}_${dataset}_seed${seed}"
-            json_out="$OUTPUT_DIR/${stem}.json"
-            if [[ -f "$json_out" ]]; then
-                echo "[skip] $stem — already done ($json_out)"
+            done_all=true
+            for thr in "${THRESHOLDS[@]}"; do
+                [[ -f "$OUTPUT_DIR/${stem}_thr${thr}.json" ]] || { done_all=false; break; }
+            done
+            if $done_all; then
+                echo "[skip] $stem — already done"
                 continue
             fi
             echo "[run]  $stem"
@@ -69,6 +76,7 @@ for dataset in "${DATASETS[@]}"; do
                 --seed       "$seed"       \
                 --data-root  "$DATA_ROOT"  \
                 --output-dir "$OUTPUT_DIR" \
+                --thresholds "${THRESHOLDS[@]}" \
                 2>&1 | tee "logs/${stem}.log"
             echo "[done] $stem"
         done

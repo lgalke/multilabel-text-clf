@@ -56,12 +56,10 @@ class CustomDataset(Dataset):
             max_length=self.max_len,
             truncation=True,
             padding='max_length',
-            return_token_type_ids=True
         )
         return {
             'ids':             torch.tensor(inputs['input_ids'],      dtype=torch.long),
             'mask':            torch.tensor(inputs['attention_mask'], dtype=torch.long),
-            'token_type_ids':  torch.tensor(inputs['token_type_ids'], dtype=torch.long),
             'targets':         torch.tensor(self.targets[index],      dtype=torch.float),
         }
 
@@ -74,8 +72,8 @@ class RobertaClass(torch.nn.Module):
         self.l3 = torch.nn.Dropout(0.3)
         self.l4 = torch.nn.Linear(768, num_labels)
 
-    def forward(self, ids, mask, token_type_ids):
-        outputs = self.l1(ids, attention_mask=mask, token_type_ids=token_type_ids)
+    def forward(self, ids, mask):
+        outputs = self.l1(ids, attention_mask=mask)
         x = outputs[0]
         x = x[:, 0, :]  # take <s> token (equiv. to [CLS])
         x = self.l3(x)
@@ -112,8 +110,7 @@ def train_model(n_epochs, training_loader, validation_loader, model, optimizer, 
             ids            = data['ids'].to(device, dtype=torch.long)
             targets        = data['targets'].to(device, dtype=torch.float)
             mask           = data['mask'].to(device, dtype=torch.long)
-            token_type_ids = data['token_type_ids'].to(device, dtype=torch.long)
-            outputs        = model(ids, mask, token_type_ids)
+            outputs        = model(ids, mask)
             loss           = loss_fn(outputs, targets)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -127,8 +124,7 @@ def train_model(n_epochs, training_loader, validation_loader, model, optimizer, 
                 ids            = data['ids'].to(device, dtype=torch.long)
                 targets        = data['targets'].to(device, dtype=torch.float)
                 mask           = data['mask'].to(device, dtype=torch.long)
-                token_type_ids = data['token_type_ids'].to(device, dtype=torch.long)
-                outputs        = model(ids, mask, token_type_ids)
+                outputs        = model(ids, mask)
                 loss           = loss_fn(outputs, targets)
                 valid_loss += (1 / (batch_idx + 1)) * (loss.item() - valid_loss)
 
@@ -140,20 +136,18 @@ def train_model(n_epochs, training_loader, validation_loader, model, optimizer, 
     return model, loss_vals
 
 
-def evaluate(model, testing_loader, device, threshold):
+def predict(model, testing_loader, device):
     model.eval()
     fin_targets, fin_outputs = [], []
     with torch.no_grad():
         for _, data in enumerate(testing_loader, 0):
             ids            = data['ids'].to(device, dtype=torch.long)
             mask           = data['mask'].to(device, dtype=torch.long)
-            token_type_ids = data['token_type_ids'].to(device, dtype=torch.long)
             targets        = data['targets'].to(device, dtype=torch.float)
-            outputs        = model(ids, mask, token_type_ids)
+            outputs        = model(ids, mask)
             fin_targets.extend(targets.cpu().detach().numpy().tolist())
             fin_outputs.extend(torch.sigmoid(outputs).cpu().detach().numpy().tolist())
-    preds = np.array(fin_outputs) >= threshold
-    return preds, fin_targets
+    return np.array(fin_outputs), fin_targets
 
 
 def main():
@@ -168,8 +162,9 @@ def main():
     parser.add_argument("--max-len",    type=int,   default=512)
     parser.add_argument("--epochs",     type=int,   default=None,
                         help="Override default epoch count from DATASET_REGISTRY")
-    parser.add_argument("--threshold",  type=float, default=0.5,
-                        help="Sigmoid threshold for converting probabilities to binary predictions")
+    parser.add_argument("--thresholds", type=float, nargs="+", default=[0.5, 0.2],
+                        help="Sigmoid thresholds for converting probabilities to binary predictions; "
+                             "metrics and an output file are written per threshold")
     parser.add_argument("--output-dir", default="results")
     args = parser.parse_args()
 
@@ -199,7 +194,7 @@ def main():
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    tokenizer = RobertaTokenizer.from_pretrained('roberta-base', do_lower_case=True)
+    tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
 
     train_split = train_df.sample(frac=0.8, random_state=args.seed)
     valid_split = train_df.drop(train_split.index).reset_index(drop=True)
@@ -226,60 +221,66 @@ def main():
 
     model, loss_vals = train_model(n_epochs, training_loader, validation_loader, model, optimizer, scheduler, device)
 
-    preds, targets = evaluate(model, testing_loader, device, args.threshold)
-    accuracy   = metrics.accuracy_score(targets, preds)
-    f1_samples = metrics.f1_score(targets, preds, average='samples')
-    f1_micro   = metrics.f1_score(targets, preds, average='micro')
-    f1_macro   = metrics.f1_score(targets, preds, average='macro')
-
-    print(f"Accuracy Score = {accuracy}")
-    print(f"F1 Score (Samples) = {f1_samples}")
-    print(f"F1 Score (Micro) = {f1_micro}")
-    print(f"F1 Score (Macro) = {f1_macro}")
+    probs, targets = predict(model, testing_loader, device)
 
     os.makedirs(args.output_dir, exist_ok=True)
     stem      = f"{MODEL_NAME}_{args.dataset}_seed{args.seed}"
     plot_path = os.path.join(args.output_dir, f"{stem}_loss.png")
-    txt_path  = os.path.join(args.output_dir, f"{stem}.txt")
-    json_path = os.path.join(args.output_dir, f"{stem}.json")
-
     loss_plot(np.linspace(1, n_epochs, n_epochs).astype(int), loss_vals, plot_path)
 
-    with open(txt_path, "w") as f:
-        print(
-            f"F1 Score (Samples) = {f1_samples}",
-            f"Accuracy Score = {accuracy}",
-            f"F1 Score (Micro) = {f1_micro}",
-            f"F1 Score (Macro) = {f1_macro}",
-            file=f
-        )
+    for threshold in args.thresholds:
+        preds      = probs >= threshold
+        accuracy   = metrics.accuracy_score(targets, preds)
+        f1_samples = metrics.f1_score(targets, preds, average='samples')
+        f1_micro   = metrics.f1_score(targets, preds, average='micro')
+        f1_macro   = metrics.f1_score(targets, preds, average='macro')
 
-    payload = {
-        "model": MODEL_NAME,
-        "dataset": args.dataset,
-        "seed": args.seed,
-        "num_labels": num_labels,
-        "hyperparameters": {
-            "lr": args.lr,
-            "batch_size": args.batch_size,
-            "max_len": args.max_len,
-            "epochs": n_epochs,
-            "threshold": args.threshold,
-            "weight_decay": 0.01,
-            "warmup_ratio": 0.1,
-        },
-        "metrics": {
-            "accuracy": accuracy,
-            "f1_samples": f1_samples,
-            "f1_micro": f1_micro,
-            "f1_macro": f1_macro,
-        },
-        "val_loss_per_epoch": loss_vals,
-    }
-    with open(json_path, "w") as f:
-        json.dump(payload, f, indent=2)
+        print(f"[threshold={threshold}] Accuracy Score = {accuracy}")
+        print(f"[threshold={threshold}] F1 Score (Samples) = {f1_samples}")
+        print(f"[threshold={threshold}] F1 Score (Micro) = {f1_micro}")
+        print(f"[threshold={threshold}] F1 Score (Macro) = {f1_macro}")
 
-    print(f"Results saved to {txt_path}, {json_path}, {plot_path}")
+        thr_stem  = f"{stem}_thr{threshold:g}"
+        txt_path  = os.path.join(args.output_dir, f"{thr_stem}.txt")
+        json_path = os.path.join(args.output_dir, f"{thr_stem}.json")
+
+        with open(txt_path, "w") as f:
+            print(
+                f"F1 Score (Samples) = {f1_samples}",
+                f"Accuracy Score = {accuracy}",
+                f"F1 Score (Micro) = {f1_micro}",
+                f"F1 Score (Macro) = {f1_macro}",
+                file=f
+            )
+
+        payload = {
+            "model": MODEL_NAME,
+            "dataset": args.dataset,
+            "seed": args.seed,
+            "num_labels": num_labels,
+            "hyperparameters": {
+                "lr": args.lr,
+                "batch_size": args.batch_size,
+                "max_len": args.max_len,
+                "epochs": n_epochs,
+                "threshold": threshold,
+                "weight_decay": 0.01,
+                "warmup_ratio": 0.1,
+            },
+            "metrics": {
+                "accuracy": accuracy,
+                "f1_samples": f1_samples,
+                "f1_micro": f1_micro,
+                "f1_macro": f1_macro,
+            },
+            "val_loss_per_epoch": loss_vals,
+        }
+        with open(json_path, "w") as f:
+            json.dump(payload, f, indent=2)
+
+        print(f"Results saved to {txt_path}, {json_path}")
+
+    print(f"Loss plot saved to {plot_path}")
 
 
 if __name__ == "__main__":

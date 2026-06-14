@@ -10,22 +10,22 @@
 #   CUDA_VISIBLE_DEVICES=0         (GPU to use)
 #   SEEDS="42 43 44"               (space-separated list of seeds)
 #
-SEEDS="100 101 102"
-OUTPUT_DIR="results-bart-t5-v2"
+SEEDS="150"
 
 set -euo pipefail
 
 #DATA_ROOT="${DATA_ROOT:-../multi_label_data}"
 DATA_ROOT="/media/nvme4n1/project-textmlp/datasets"
-OUTPUT_DIR="${OUTPUT_DIR:-results}"
+OUTPUT_DIR="${OUTPUT_DIR:-results-econbiz}"
 GPU="${CUDA_VISIBLE_DEVICES:-0}"
 read -ra SEEDS <<< "${SEEDS:-42}"
-THRESHOLDS=(0.5 0.2)
 
 #DATASETS=(reuters rcv1-v2 econbiz amazon dbpedia nyt goemotions)
 # without Econbiz
-DATASETS=(reuters rcv1-v2 amazon dbpedia nyt goemotions)
-MODELS=("t5" "bart")
+# DATASETS=(reuters rcv1-v2 amazon dbpedia nyt goemotions)
+DATASETS=(econbiz)
+#MODELS=(t5 bart)
+MODELS=(t5 bart)
 
 mkdir -p "$OUTPUT_DIR" logs
 
@@ -38,7 +38,6 @@ echo "  GPU        : $GPU"
 echo "  SEEDS      : ${SEEDS[*]}"
 echo "  DATASETS   : ${DATASETS[*]}"
 echo "  MODELS     : ${MODELS[*]}"
-echo "  THRESHOLDS : ${THRESHOLDS[*]}"
 echo "===================="
 
 for dataset in "${DATASETS[@]}"; do
@@ -51,12 +50,9 @@ for dataset in "${DATASETS[@]}"; do
     for model in "${MODELS[@]}"; do
         for seed in "${SEEDS[@]}"; do
             stem="${model}_${dataset}_seed${seed}"
-            done_all=true
-            for thr in "${THRESHOLDS[@]}"; do
-                [[ -f "$OUTPUT_DIR/${stem}_thr${thr}.json" ]] || { done_all=false; break; }
-            done
-            if $done_all; then
-                echo "[skip] $stem — already done"
+            json_out="$OUTPUT_DIR/${stem}.json"
+            if [[ -f "$json_out" ]]; then
+                echo "[skip] $stem — already done ($json_out)"
                 continue
             fi
             echo "[run]  $stem"
@@ -65,7 +61,6 @@ for dataset in "${DATASETS[@]}"; do
                 --seed       "$seed"       \
                 --data-root  "$DATA_ROOT"  \
                 --output-dir "$OUTPUT_DIR" \
-                --thresholds "${THRESHOLDS[@]}" \
                 2>&1 | tee "logs/${stem}.log"
             echo "[done] $stem"
         done

@@ -20,6 +20,7 @@ DATA_ROOT="/media/nvme4n1/project-textmlp/datasets"
 OUTPUT_DIR="${OUTPUT_DIR:-results}"
 GPU="${CUDA_VISIBLE_DEVICES:-0}"
 read -ra SEEDS <<< "${SEEDS:-42}"
+THRESHOLDS=(0.5 0.2)
 
 DATASETS=(reuters rcv1-v2 econbiz amazon dbpedia nyt goemotions)
 MODELS=(bart t5)
@@ -35,6 +36,7 @@ echo "  GPU        : $GPU"
 echo "  SEEDS      : ${SEEDS[*]}"
 echo "  DATASETS   : ${DATASETS[*]}"
 echo "  MODELS     : ${MODELS[*]}"
+echo "  THRESHOLDS : ${THRESHOLDS[*]}"
 echo "===================="
 
 for dataset in "${DATASETS[@]}"; do
@@ -47,9 +49,12 @@ for dataset in "${DATASETS[@]}"; do
     for model in "${MODELS[@]}"; do
         for seed in "${SEEDS[@]}"; do
             stem="${model}_${dataset}_seed${seed}"
-            json_out="$OUTPUT_DIR/${stem}.json"
-            if [[ -f "$json_out" ]]; then
-                echo "[skip] $stem — already done ($json_out)"
+            done_all=true
+            for thr in "${THRESHOLDS[@]}"; do
+                [[ -f "$OUTPUT_DIR/${stem}_thr${thr}.json" ]] || { done_all=false; break; }
+            done
+            if $done_all; then
+                echo "[skip] $stem — already done"
                 continue
             fi
             echo "[run]  $stem"
@@ -58,6 +63,7 @@ for dataset in "${DATASETS[@]}"; do
                 --seed       "$seed"       \
                 --data-root  "$DATA_ROOT"  \
                 --output-dir "$OUTPUT_DIR" \
+                --thresholds "${THRESHOLDS[@]}" \
                 2>&1 | tee "logs/${stem}.log"
             echo "[done] $stem"
         done

@@ -276,18 +276,46 @@ def validation(testing_loader):
     return fin_outputs, fin_targets
 
 # Test Model
-outputs, targets = validation(testing_loader)
-outputs = np.array(outputs) >= 0.5
-accuracy = metrics.accuracy_score(targets, outputs)
-f1_score_avg = metrics.f1_score(targets, outputs, average='samples')
-f1_score_micro = metrics.f1_score(targets, outputs, average='micro')
-f1_score_macro = metrics.f1_score(targets, outputs, average='macro')
-print(f"Accuracy Score = {accuracy}")
-print(f"F1 Score (Samples) = {f1_score_avg}")
-print(f"F1 Score (Micro) = {f1_score_micro}")
-print(f"F1 Score (Macro) = {f1_score_macro}")
+probs, targets = validation(testing_loader)
+probs = np.array(probs)
 
-#Save results
-import sys
-with open(dataset + "_results.txt", "w") as f:
-    print(f"F1 Score (Samples) = {f1_score_avg}",f"Accuracy Score = {accuracy}",f"F1 Score (Micro) = {f1_score_micro}",f"F1 Score (Macro) = {f1_score_macro}", file=f)
+THRESHOLDS = [0.5, 0.2]
+
+for threshold in THRESHOLDS:
+    outputs = probs >= threshold
+    accuracy = metrics.accuracy_score(targets, outputs)
+    f1_score_avg = metrics.f1_score(targets, outputs, average='samples')
+    f1_score_micro = metrics.f1_score(targets, outputs, average='micro')
+    f1_score_macro = metrics.f1_score(targets, outputs, average='macro')
+    print(f"[threshold={threshold}] Accuracy Score = {accuracy}")
+    print(f"[threshold={threshold}] F1 Score (Samples) = {f1_score_avg}")
+    print(f"[threshold={threshold}] F1 Score (Micro) = {f1_score_micro}")
+    print(f"[threshold={threshold}] F1 Score (Macro) = {f1_score_macro}")
+
+    # Save results
+    stem = f"{dataset}_results_thr{threshold:g}"
+    with open(stem + ".txt", "w") as f:
+        print(f"F1 Score (Samples) = {f1_score_avg}",f"Accuracy Score = {accuracy}",f"F1 Score (Micro) = {f1_score_micro}",f"F1 Score (Macro) = {f1_score_macro}", file=f)
+
+    payload = {
+        "model": "deberta",
+        "dataset": dataset,
+        "num_labels": labels,
+        "hyperparameters": {
+            "lr": LEARNING_RATE,
+            "batch_size": TRAIN_BATCH_SIZE,
+            "max_len": MAX_LEN,
+            "epochs": EPOCHS,
+            "threshold": threshold,
+            "weight_decay": 0.01,
+            "warmup_ratio": 0.1,
+        },
+        "metrics": {
+            "accuracy": accuracy,
+            "f1_samples": f1_score_avg,
+            "f1_micro": f1_score_micro,
+            "f1_macro": f1_score_macro,
+        },
+    }
+    with open(stem + ".json", "w") as f:
+        json.dump(payload, f, indent=2)

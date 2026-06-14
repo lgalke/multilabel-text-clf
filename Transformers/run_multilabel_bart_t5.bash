@@ -10,8 +10,7 @@
 #   CUDA_VISIBLE_DEVICES=0         (GPU to use)
 #   SEEDS="42 43 44"               (space-separated list of seeds)
 #
-# Example:
-#   SEEDS="42 43 44" CUDA_VISIBLE_DEVICES=1 bash run_multilabel_bart_t5.bash
+SEEDS="145"
 
 set -euo pipefail
 
@@ -21,8 +20,12 @@ OUTPUT_DIR="${OUTPUT_DIR:-results}"
 GPU="${CUDA_VISIBLE_DEVICES:-0}"
 read -ra SEEDS <<< "${SEEDS:-42}"
 
-DATASETS=(reuters rcv1-v2 econbiz amazon dbpedia nyt goemotions)
-MODELS=(bart t5)
+#DATASETS=(reuters rcv1-v2 econbiz amazon dbpedia nyt goemotions)
+# without Econbiz
+# DATASETS=(reuters rcv1-v2 amazon dbpedia nyt goemotions)
+DATASETS=(nyt)
+#MODELS=(t5 bart)
+MODELS=("bart")
 
 mkdir -p "$OUTPUT_DIR" logs
 

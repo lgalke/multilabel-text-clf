@@ -19,7 +19,8 @@ set -euo pipefail
 DATA_ROOT="/media/nvme4n1/project-textmlp/datasets"
 OUTPUT_DIR="${OUTPUT_DIR:-results-encoders}"
 GPU="${CUDA_VISIBLE_DEVICES:-0}"
-read -ra SEEDS <<< "${SEEDS:-143 144}"
+#read -ra SEEDS <<< "${SEEDS:-143 144}"
+SEEDS="100 101 102"
 
 # econbiz excluded for now
 DATASETS=(reuters amazon dbpedia goemotions)

@@ -8,7 +8,7 @@ from sklearn import metrics
 import transformers
 import torch
 from torch.utils.data import Dataset, DataLoader, RandomSampler, SequentialSampler
-from transformers import DebertaTokenizer, DebertaModel, DebertaPreTrainedModel
+from transformers import DebertaTokenizer, DebertaModel, DebertaPreTrainedModel, get_linear_schedule_with_warmup
 import logging
 logging.basicConfig(level=logging.ERROR)
 import numpy as np
@@ -75,7 +75,7 @@ MAX_LEN = 512
 TRAIN_BATCH_SIZE = 4
 VALID_BATCH_SIZE = 4
 EPOCHS = epochs
-LEARNING_RATE = 5e-05
+LEARNING_RATE = 2e-05
 config = DebertaConfig()
 tokenizer = DebertaTokenizer.from_pretrained("microsoft/deberta-base")
 
@@ -179,7 +179,13 @@ def loss_fn(outputs, targets):
     return torch.nn.BCEWithLogitsLoss()(outputs, targets)
 
 
-optimizer = torch.optim.Adam(params=model.parameters(), lr=LEARNING_RATE)
+optimizer = torch.optim.AdamW(params=model.parameters(), lr=LEARNING_RATE, weight_decay=0.01)
+total_steps = len(training_loader) * EPOCHS
+scheduler = get_linear_schedule_with_warmup(
+    optimizer,
+    num_warmup_steps=int(0.1 * total_steps),
+    num_training_steps=total_steps,
+)
 
 # Plot Val loss
 import matplotlib.pyplot as plt
@@ -191,7 +197,7 @@ def loss_plot(epochs, loss):
    
 # Train Model
 def train_model(start_epochs, n_epochs,
-                training_loader, validation_loader, model, optimizer):
+                training_loader, validation_loader, model, optimizer, scheduler):
     loss_vals = []
     for epoch in range(start_epochs, n_epochs + 1):
         train_loss = 0
@@ -215,7 +221,9 @@ def train_model(start_epochs, n_epochs,
             # Backward
             loss = loss_fn(outputs, targets)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
+            scheduler.step()
             train_loss = train_loss + ((1 / (batch_idx + 1)) * (loss.item() - train_loss))
 
         ######################
@@ -249,7 +257,7 @@ def train_model(start_epochs, n_epochs,
     return model
 
 
-trained_model = train_model(1, epochs, training_loader, validation_loader, model, optimizer)
+trained_model = train_model(1, epochs, training_loader, validation_loader, model, optimizer, scheduler)
 
 
 def validation(testing_loader):

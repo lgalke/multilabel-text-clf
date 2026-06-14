@@ -9,7 +9,7 @@ import pandas as pd
 from sklearn import metrics
 from sklearn.preprocessing import MultiLabelBinarizer
 import transformers
-from transformers import T5Tokenizer
+from transformers import T5Tokenizer, get_linear_schedule_with_warmup
 import torch
 from torch.utils.data import Dataset, DataLoader
 import logging
@@ -90,7 +90,7 @@ def loss_plot(epochs_range, loss, plot_path):
     plt.close()
 
 
-def train_model(n_epochs, training_loader, validation_loader, model, optimizer, device):
+def train_model(n_epochs, training_loader, validation_loader, model, optimizer, scheduler, device):
     loss_vals = []
     for epoch in range(1, n_epochs + 1):
         train_loss = 0
@@ -106,7 +106,9 @@ def train_model(n_epochs, training_loader, validation_loader, model, optimizer, 
             outputs = model(ids, mask)
             loss    = loss_fn(outputs, targets)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
+            scheduler.step()
             train_loss += (1 / (batch_idx + 1)) * (loss.item() - train_loss)
 
         model.eval()
@@ -149,7 +151,7 @@ def main():
     parser.add_argument("--seed",       type=int,   default=42)
     parser.add_argument("--data-root",  default="../multi_label_data",
                         help="Root directory containing per-dataset folders")
-    parser.add_argument("--lr",         type=float, default=5e-5)
+    parser.add_argument("--lr",         type=float, default=2e-5)
     parser.add_argument("--batch-size", type=int,   default=4)
     parser.add_argument("--max-len",    type=int,   default=512)
     parser.add_argument("--epochs",     type=int,   default=None,
@@ -202,9 +204,15 @@ def main():
     testing_loader    = DataLoader(CustomDataset(test_split,  tokenizer, args.max_len), **eval_params)
 
     model     = T5Class(num_labels).to(device)
-    optimizer = torch.optim.Adam(params=model.parameters(), lr=args.lr)
+    optimizer = torch.optim.AdamW(params=model.parameters(), lr=args.lr, weight_decay=0.01)
+    total_steps = len(training_loader) * n_epochs
+    scheduler = get_linear_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=int(0.1 * total_steps),
+        num_training_steps=total_steps,
+    )
 
-    model, loss_vals = train_model(n_epochs, training_loader, validation_loader, model, optimizer, device)
+    model, loss_vals = train_model(n_epochs, training_loader, validation_loader, model, optimizer, scheduler, device)
 
     preds, targets = evaluate(model, testing_loader, device, args.threshold)
     accuracy   = metrics.accuracy_score(targets, preds)
@@ -245,6 +253,8 @@ def main():
             "max_len": args.max_len,
             "epochs": n_epochs,
             "threshold": args.threshold,
+            "weight_decay": 0.01,
+            "warmup_ratio": 0.1,
         },
         "metrics": {
             "accuracy": accuracy,

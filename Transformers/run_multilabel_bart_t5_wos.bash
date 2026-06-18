@@ -16,7 +16,8 @@ set -euo pipefail
 
 #DATA_ROOT="${DATA_ROOT:-../multi_label_data}"
 #DATA_ROOT="/media/nvme4n1/project-textmlp/datasets"
-DATA_ROOT="/media/nvme3n1/lgalke/git/multilabel-text-clf/WideMLP/WoS-yy"
+#DATA_ROOT="/media/nvme3n1/lgalke/git/multilabel-text-clf/WideMLP/WoS-yy"
+DATA_ROOT="${DATA_ROOT:-../WideMLP/WoS-yy}"
 OUTPUT_DIR="${OUTPUT_DIR:-results-wos}"
 GPU="${CUDA_VISIBLE_DEVICES:-0}"
 read -ra SEEDS <<< "${SEEDS:-42}"
@@ -41,10 +42,11 @@ echo "  MODELS     : ${MODELS[*]}"
 echo "===================="
 
 for dataset in "${DATASETS[@]}"; do
-    train_json="$DATA_ROOT/$dataset/train_data.json"
-    test_json="$DATA_ROOT/$dataset/test_data.json"
-    if [[ ! -f "$train_json" || ! -f "$test_json" ]]; then
-        echo "[skip] $dataset — data not found ($train_json)"
+    # WoS ships as .src/.tgt files (no JSON); guard on those instead.
+    train_src="$DATA_ROOT/$dataset/train.src"
+    test_src="$DATA_ROOT/$dataset/test.src"
+    if [[ ! -f "$train_src" || ! -f "$test_src" ]]; then
+        echo "[skip] $dataset — data not found ($train_src)"
         continue
     fi
     for model in "${MODELS[@]}"; do

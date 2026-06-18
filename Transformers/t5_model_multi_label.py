@@ -24,6 +24,7 @@ DATASET_REGISTRY = {
     "dbpedia"      : ("dbpedia",     298,        5),
     "nyt"          : ("nyt",         166,        15),
     "goemotions"   : ("goemotions",  28,         5),
+    "wos"          : ("wos",         141,        5),
 }
 
 MODEL_NAME = "t5"
@@ -74,6 +75,22 @@ class T5Class(torch.nn.Module):
 
     def forward(self, ids, mask):
         return self.t5(ids, attention_mask=mask).logits
+
+
+def load_src_tgt_split(data_dir, split):
+    """Read one .src/.tgt pair; returns (docs, labels) where labels is a list of token lists.
+
+    Labels in .tgt are space-separated bracketed tokens, e.g. ``[a_18] [a_96]``.
+    This mirrors the parsing in WideMLP/sparse-multilabel-processing/data.py::load_wos_data.
+    """
+    with open(os.path.join(data_dir, f"{split}.src"), encoding="utf-8") as f:
+        docs = [line.rstrip("\n") for line in f]
+    with open(os.path.join(data_dir, f"{split}.tgt"), encoding="utf-8") as f:
+        labels = [line.split() for line in f]
+    assert len(docs) == len(labels), (
+        f"Mismatch in {split}: {len(docs)} docs vs {len(labels)} label rows"
+    )
+    return docs, labels
 
 
 def loss_fn(outputs, targets):
@@ -166,33 +183,56 @@ def main():
 
     set_seed(args.seed)
 
-    data_dir   = os.path.join(args.data_root, folder)
-    train_list = json.load(open(os.path.join(data_dir, "train_data.json")))
-    test_list  = json.load(open(os.path.join(data_dir, "test_data.json")))
+    data_dir = os.path.join(args.data_root, folder)
 
-    train_data   = np.array(list(map(lambda x: list(x.values())[:2], train_list)), dtype=object)
-    train_labels = np.array(list(map(lambda x: list(x.values())[2],  train_list)), dtype=object)
-    test_data    = np.array(list(map(lambda x: list(x.values())[:2], test_list)),  dtype=object)
-    test_labels  = np.array(list(map(lambda x: list(x.values())[2],  test_list)),  dtype=object)
+    if args.dataset == "wos":
+        # WoS ships with explicit train/val/test splits as .src/.tgt files.
+        # Use them directly (no 80/20 resampling) so the split is identical to
+        # the WideMLP WoS experiment (WideMLP/sparse-multilabel-processing/data.py::load_wos_data).
+        train_docs, train_raw_labels = load_src_tgt_split(data_dir, "train")
+        val_docs,   val_raw_labels   = load_src_tgt_split(data_dir, "val")
+        test_docs,  test_raw_labels  = load_src_tgt_split(data_dir, "test")
 
-    label_encoder    = MultiLabelBinarizer()
-    label_encoder.fit([*train_labels, *test_labels])
-    train_labels_enc = label_encoder.transform(train_labels)
-    test_labels_enc  = label_encoder.transform(test_labels)
+        # Fit MultiLabelBinarizer on the union of all splits for a complete label space.
+        label_encoder = MultiLabelBinarizer()
+        label_encoder.fit([*train_raw_labels, *val_raw_labels, *test_raw_labels])
+        num_labels = len(label_encoder.classes_)
+        print(f"Found {num_labels} classes.")
 
-    train_df = pd.DataFrame({'text': train_data[:, 1], 'labels': train_labels_enc.tolist()})
-    test_df  = pd.DataFrame({'text': test_data[:, 1],  'labels': test_labels_enc.tolist()})
+        train_labels_enc = label_encoder.transform(train_raw_labels)
+        val_labels_enc   = label_encoder.transform(val_raw_labels)
+        test_labels_enc  = label_encoder.transform(test_raw_labels)
 
-    print(f"Train texts: {len(train_df)},  Test texts: {len(test_df)}")
+        train_split = pd.DataFrame({'text': train_docs, 'labels': train_labels_enc.tolist()})
+        valid_split = pd.DataFrame({'text': val_docs,   'labels': val_labels_enc.tolist()})
+        test_split  = pd.DataFrame({'text': test_docs,  'labels': test_labels_enc.tolist()})
+    else:
+        train_list = json.load(open(os.path.join(data_dir, "train_data.json")))
+        test_list  = json.load(open(os.path.join(data_dir, "test_data.json")))
+
+        train_data   = np.array(list(map(lambda x: list(x.values())[:2], train_list)), dtype=object)
+        train_labels = np.array(list(map(lambda x: list(x.values())[2],  train_list)), dtype=object)
+        test_data    = np.array(list(map(lambda x: list(x.values())[:2], test_list)),  dtype=object)
+        test_labels  = np.array(list(map(lambda x: list(x.values())[2],  test_list)),  dtype=object)
+
+        label_encoder    = MultiLabelBinarizer()
+        label_encoder.fit([*train_labels, *test_labels])
+        train_labels_enc = label_encoder.transform(train_labels)
+        test_labels_enc  = label_encoder.transform(test_labels)
+
+        train_df = pd.DataFrame({'text': train_data[:, 1], 'labels': train_labels_enc.tolist()})
+        test_df  = pd.DataFrame({'text': test_data[:, 1],  'labels': test_labels_enc.tolist()})
+
+        train_split = train_df.sample(frac=0.8, random_state=args.seed)
+        valid_split = train_df.drop(train_split.index).reset_index(drop=True)
+        train_split = train_split.reset_index(drop=True)
+        test_split  = test_df.reset_index(drop=True)
+
+    print(f"Train texts: {len(train_split)},  Val: {len(valid_split)},  Test: {len(test_split)}")
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     tokenizer = T5Tokenizer.from_pretrained('google-t5/t5-base')
-
-    train_split = train_df.sample(frac=0.8, random_state=args.seed)
-    valid_split = train_df.drop(train_split.index).reset_index(drop=True)
-    train_split = train_split.reset_index(drop=True)
-    test_split  = test_df.reset_index(drop=True)
 
     print(f"TRAIN: {train_split.shape}  VAL: {valid_split.shape}  TEST: {test_split.shape}")
 
